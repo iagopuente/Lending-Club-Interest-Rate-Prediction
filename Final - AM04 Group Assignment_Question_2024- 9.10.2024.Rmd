@@ -1,0 +1,873 @@
+---
+title: "Data Science I, Workshop I: Predicting interest rates at the Lending Club"
+author: "Group 4"
+date: "October 2024"
+output:
+  html_document:
+    theme: journal
+    highlight: tango
+    number_sections: yes
+    toc: yes
+    toc_float: no
+    toc_depth: 1
+    mathjax: "default"
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval=FALSE) # Make sure eval=TRUE before you submit your assignment!
+```
+
+```{r, load_libraries, include = FALSE}
+
+install.packages("caret")
+install.packages("formatR")
+
+library(tidyverse) # the usual stuff: dplyr, readr, and other goodies
+library(lubridate) # to handle dates
+library(GGally) # for correlation-scatterplot matrix
+library(car) # vif() function to check for multicolinearity
+library(ggfortify) # to produce residual diagnostic plots
+library(rsample) # to split dataframe in training- & testing sets
+library(here) # to read files and organise data
+library(janitor) # clean_names()
+library(broom) # use broom:augment() to get tidy table with regression output, residuals, etc
+library(huxtable) # to get summary table of all models produced
+library(caret) # to train more advanced models (k-fold cross-validation, stepwise regression, LASSO)
+library(zoo) #to allow for timeseries operations
+library(formatR)
+```
+
+This workshop partially replicates the analysis presented in class (lectures 1 and 2) and builds on it. You are to work in your study group. Feel free to refer to the `Lending_Club_Session1_and_2.html` if you get stuck.
+
+The workshop consists of 15 questions (2 of them are optional). Submit one report (one file) per study group.
+
+*Please write your answer below each question and submit a knitted RMD markup file as the HTML file via Canvas. The deadline is 11th October 2024 at 11:59pm. Please note that there is a 20% penalty on your Workshop Report 1 grade if you submit an RMD file.*
+
+Please keep your answers concise -- focus on answering what you are asked and use your data science work to justify your answers. Do not focus on the process you have followed to reach the answer.
+
+# Load and prepare the data
+
+We start by loading the data to R in a dataframe.
+
+```{r, load_data, warning=FALSE, message=FALSE}
+
+lc_raw <- read_csv("LendingClub Data.csv",  skip=1) %>%  #since the first row is a title we want to skip it. 
+  clean_names() # use janitor::clean_names()
+```
+
+# ICE the data: Inspect, Clean, Explore **(Q1)**
+
+Any data science engagement starts with ICE. Inspect, Clean and Explore the data. For this workshop we have cleaned the data for you.
+
+```{r}
+glimpse(lc_raw[,1:19])
+
+lc_clean<- lc_raw  %>%
+  select(-where(~ mean(is.na(.)) > 0.9)) %>% # drop columns with more than 90% missing data
+  filter(!is.na(int_rate)) %>%   #delete empty rows of int_rate as this is what we are predicting
+  mutate(
+    issue_d = mdy(issue_d),  # lubridate::mdy() to fix date format -- just "understands" the date and makes month/day/year
+    term = factor(term_months),     # turn 'term' into a categorical variable
+    delinq_2yrs = factor(delinq_2yrs) # turn 'delinq_2yrs' into a categorical variable
+  ) %>% 
+  dplyr::select(-emp_title,-installment, -term_months, everything()) #move some not-so-important variables to the end. 
+```
+
+The data is now in a clean format stored in the dataframe "lc_clean."
+
+## **Q1.** Explore the data by building some visualizations as suggested below. Please add at least *two* visualizations of your own. {.unnumbered}
+
+Provide your answers in the code block below. (Look at the "Lending_Club_Session1_and_2.html" for some hints on how to do this using ggplot.)
+
+```{r, data_visualisation}
+# Build a histogram of interest rates. Make sure it looks nice!
+
+glimpse(lc_clean)
+
+ggplot(lc_clean, aes(x = int_rate)) + geom_histogram(binwidth = 0.01, fill = "blue", alpha = 0.2, color = "black") + labs(title = "Distribution of Interest Rates", x = "Interest Rates", y = "Count") + theme_bw() + scale_x_continuous(labels = scales::percent)
+
+# Build a histogram of interest rates but use different color for loans of different grades 
+
+ggplot(lc_clean, aes(x = int_rate, fill = grade)) + geom_histogram(binwidth = 0.01) + scale_x_continuous(labels = scales::percent) + labs(title = "Distribution of Interest Rates by Loan Grade", x = "Interest Rates", y = "Count", fill = "Loan Grade") + theme_bw() + scale_x_continuous(labels = scales::percent)
+
+# Produce a scatter plot of loan amount against interest rate and add visually the line of best fit
+
+ggplot(lc_clean[seq(1, nrow(lc_clean), 10), ], aes(x = int_rate, y = loan_amnt)) + geom_point(size = 0.1, alpha = 0.5) + geom_smooth(method = lm, se = 0) + labs(title = "Relationship between Interest Rates and Loan Amount", x = "Interst Rates", y = "Loan Amount ($)") + theme_bw() + scale_x_continuous(labels = scales::percent)
+
+# Produce a scatter plot of annual income against interest rate and add visually the line of best fit 
+
+ggplot(lc_clean[seq(1, nrow(lc_clean), 10), ], aes(x = int_rate, y = annual_inc)) + geom_point(size = 0.1, alpha = 0.5) + geom_smooth(method = lm, se = 0) + labs(title = "Relationship between Interest Rates and Annual Income", x = "Interest Rates", y = "Annual Income ($)") + theme_bw() + scale_x_continuous(labels = scales::percent)
+
+# In the same axes, produce box plots of the interest rate for every value of delinquencies
+
+ggplot(lc_clean, aes(y=int_rate, x=delinq_2yrs, colour= delinq_2yrs)) + geom_boxplot() + theme_bw() + scale_y_continuous(labels=scales::percent) + theme(legend.position = "none") + labs(title = "Impact of delinquencies over the last two years on Interest Rates",
+    x= "Number of delinquecies in the last two years", y= "Interest Rate"
+  )
+
+# Add 2 visualizations of your own
+# Visualization 1: Does the interest rate charged change for different termed loans?
+
+ggplot(lc_clean, aes(x = int_rate, fill = term)) + 
+  geom_density(alpha = 0.5) +
+  theme_bw() +
+  theme(legend.position = "right") +  # Set the legend position
+  scale_x_continuous(labels = scales::percent) + 
+  labs(x="Interest Rate", fill = "Loan Term", title = "Density of Interest Rate according to Loan Term") 
+
+# Visualization 2: Does the purpose of loan impact the interest rate charged?
+
+graph <- lc_clean %>%
+mutate(purpose = fct_reorder(purpose, int_rate, median))
+
+ggplot(graph, aes(x = int_rate, y = purpose, color = purpose)) + 
+  geom_boxplot() + 
+  theme_bw() + 
+  scale_x_continuous(labels = scales::percent) + 
+  labs(x = "Interest Rate", y = "Loan Purpose", title = "Interest Rate by Loan Purpose", color = "Purpose of Loan")
+```
+
+>Visualization 1: From the density plots for term 36 loans and term 60 loans it is evident that a larger proportion of term 60 loans face high interest rates compared to term 36 loans. This can be inferred as the term 60 graph is more left-skewed. The graph for term 36 loans is more right skewed indicating that most of these loans have lower interest rates and only a few have high interest rates. This difference may be due to the fact that longer loan terms introduce greater uncertainty regarding repayment, leading to higher interest rates being applied to these loans.
+
+>Visualization 2: The visualization shows that certain loan purposes have higher median interest rates than others. For instance, loans to small businesses have a higher median interest rate compared to car loans. This difference may stem from the relatively higher risk of default associated with small business loans, driven by unpredictable revenue and uncertain economic conditions. These factors make it more challenging for lenders to evaluate the repayment capacity of small business owners. Conversely, car loans are usually secured by the vehicle itself as collateral, allowing lenders to repossess the car in the event of default, which reduces their risk.
+
+
+# Estimate simple linear regression models **(Q2, Q3)**
+
+We start with a simple but quite powerful model. Use the `lm` command to estimate a regression model with the following variables "term", "annual_inc", "dti", and "grade".
+
+```{r, simple regression}
+
+# Estimate a simple linear regression model predicting 'int_rate'
+model0 <- lm(int_rate ~ term + annual_inc + dti + grade, data = lc_clean)
+
+# View the summary of the model
+summary(model0)
+```
+
+## **Q2.** Answer the following questions on model 0. {.unnumbered}
+
+>a.  Are all variables statistically significant?
+Yes, all variables in Model 0 are statistically significant. The p-values for all coefficients are less than 0.05 (in fact, they are all marked with ***, indicating p-values < 0.001). This indicates that each predictor variable in this model has significant predictive power over the dependent variable int_rate.
+
+>b.  How much explanatory power does the model have?
+Model 0 demonstrates substantial explanatory power, with an Adjusted R-squared of 0.919. This value reveals that about 91.91% of the variability in interest rates (int_rate) is captured by the independent variables (term, annual_inc, dti, and grade). The high Adjusted R-squared indicates not only a good fit but also robustness, reflecting that the model effectively incorporates the predictors without overfitting. Such a high level of explanatory power suggests that this model is well-suited for predicting interest rates.
+
+
+Fit a new linear regression that is identical to model 0, however, with the extra variable "loan_amnt".
+
+```{r, simple regression with extra variable }
+
+model1 <- lm(int_rate ~ term + annual_inc + dti + grade + loan_amnt, data = lc_clean)
+  
+summary(model1)
+```
+
+## **Q3.** Answer the following questions on model 1. {.unnumbered}
+
+>a.  Are all variables statistically significant?
+All variables except annual income are statistically significant in Model 1. 
+
+>b.  If your answer to part 'a' is affirmative, then discuss whether model 0 should be preferred over model 1.
+Otherwise, discuss how a variable that was statistically significant in model 0 is not significant anymore; or how the new variable is not statistically significant.
+
+>The annual income variable has a p-value above 0.05 and a t-statistic below |2|, indicating that its coefficient is not significant at the 5% level. In contrast, this variable was significant in Model 0. The shift in significance can be attributed to the inclusion of the loan_amnt variable in Model 1. Part of the explanatory power previously held by annual_inc is now accounted for by loan_amnt, likely due to multicollinearity between these two variables. Consequently, in Model 1, annual income loses its significance, as loan_amnt effectively explains the variability in interest rates (int_rate).
+
+>Model 0 has only significant explanatory variables, and there is very little difference between the Adjusted R-squared values for both models (Model 0 explains 91.91% variability in int_rate while Model 1 explains 91.97% variability in int_rate). Additionally, the residual sum of errors is similar in both models. Therefore, Model 0 is the better model since all variables have significant explanatory power on int_rate there. 
+
+>c. How do you interpret the coefficients of the *(i)* "term60" dummy variable; *(ii)* "gradeF" dummy variable; and *(iii)* "loan_amnt" variable?
+>(i) "term60" dummy variable:
+Coefficient: 0.003608
+The coefficient for the "term60" dummy variable indicates how the interest rate changes when the loan term is 60 months compared to the baseline term (36 months). The positive and significant coefficient of term 60 implies that on average, loans that have a 60 month term are charged 0.36% higher interest rates than loans that are 36 months long. 
+
+>(ii) "gradeF" dummy variable:
+Coefficient: 0.1195
+This positive and significant coefficient implies that a grade F borrower would on average be charged 11.95% higher interest rate than the baseline grade borrower (grade A).
+
+>(iii) "loan_amnt" variable:
+Coefficient: 0.0000002037
+This indicates that for each additional dollar in loan amount, the interest rate charged increases by approximately 0.00002037%. So for an increase in loan amount of a 100,000$ the interest rate would increase by 2.037%.
+
+>d.  How much explanatory power does the model have?
+The Adjusted R-squared for Model 1 is 0.9197, indicating that approximately 91.97% of the variability in int_rate is explained by the independent variables included in the model. Accounting for the number of predictors this suggests a strong fit.
+
+>e.  Approximately, how wide would the 95% confidence interval of any prediction based on this model be?
+To estimate the width of a 95% confidence interval for predictions, we can use the Residual Standard Error from the model summary.
+
+>Residual Standard Error: 0.01065
+
+>t-critical at the 5% significance level = 1.96. 
+
+>The approximate width of the 95% confidence interval can be calculated as:
+Width ≈ 2 × t-crtical x Residual Standard Error = 2 × 1.96 × 0.01065 ≈ 0.0417
+
+>The value 0.0417 represents the total width of the interval. This means the predicted interest rate can vary by approximately 0.02085 (half of the interval) or 2.085% in either direction. The confidence interval is relatively narrow, suggesting the model makes predictions with a high level of precision.
+
+
+# Feature engineering **(Q4)**
+
+Let's build progressively more complex models with more features.
+
+```{r, Feature Engineering }
+#Add to model 1 an interaction between loan amount and grade. Use the "var1*var2" notation to define an interaction term in the linear regression model. This will add the interaction and the individual variables to the model. 
+model2 <- lm(int_rate ~ term + annual_inc + dti + loan_amnt*grade, data = lc_clean)
+summary(model2)
+
+#Add to the model you just created above the square and the cube of annual income. Use the poly(var_name,3) command as a variable in the linear regression model.  
+model3 <- lm(int_rate ~ term + dti +  loan_amnt * grade + poly(annual_inc, 2) + poly(annual_inc, 3), data = lc_clean)
+summary(model3)
+
+#Continuing with the previous model, instead of using annual income as a continuous variable, break it down into (ten) deciles and use decile dummy variables. This is an alternative way of modelling non-linear relationships. You can do this with the following command. 
+
+lc_clean <- lc_clean %>% 
+  mutate(deciles = as.factor(ntile(annual_inc, 10)))
+
+model4 <- lm(int_rate ~ term + dti + loan_amnt * grade + deciles, data = lc_clean)
+summary(model4)
+
+#Compare the performance of these four models using the anova command
+
+anova_results <- anova(model1, model2, model3, model4)
+
+# View the ANOVA results
+print(anova_results)
+```
+
+## **Q4.** Answer the following questions {.unnumbered}
+
+>a.  Which of the four models has the most explanatory power in sample? Without testing on a test set, which model would you say has the highest out of sample explanatory power?
+Model 1 vs. Model 2:
+The residual sum of squares (RSS) measures the level of variance in the error term, or residuals, of a regression model. The smaller the residual sum of squares, the better your model fits your data. RSS decreases from 4.2192 to 4.1860, indicating that Model 2 fits the data better. The F-statistic is 49.9645, and the p-value is extremely small (< 2e-16), which indicates that the interaction term between loan_amnt and grade significantly improves the model and that Model 2 is significantly different from Model 1. Thus, Model 2 is a significantly better fit than Model 1.
+
+>Model 2 vs. Model 3:
+RSS remains almost unchanged (4.1860 to 4.1859).
+The F-statistic is 0.4840, and the p-value is 0.61631, which is much larger than 0.05. This suggests that adding the polynomial terms for annual_inc (degree 2 and 3) does not significantly improve the model. Therefore, Model 3 is not a better fit than Model 2.
+
+>Model 3 vs. Model 4:
+RSS decreases slightly from 4.1859 to 4.1847.
+The F-statistic is 1.7937, with a p-value of 0.09603. This p-value is above the 0.05 threshold but below 0.1, indicating marginal significance. This suggests that replacing the polynomial terms with deciles for annual_inc might provide a slight improvement in fit, but the improvement is not strong enough to conclude that Model 4 is significantly better than Model 3.
+
+>In conclusion, Model 4 has the lowest RSS, meaning it explains the most variation in the int_rate variable in sample. However, the differences between Models 2, 3, and 4 are quite small. To check for the model with the best out of sample explanatory power, we can look at the relative complexity and improvement in fit across the models.
+
+>Model 2 likely has the highest out-of-sample explanatory power. It strikes a balance between adding complexity (with the interaction term) and improving the model fit without risking over-fitting (as evidenced by the highly significant improvement in fit compared to Model 1). Thus, Model 2 stands out as the most significant improvement over the simpler models, while Models 3 and 4 offer minimal or marginal improvements.
+
+>b.  In model 2, how do you interpret the estimated coefficient of the interaction term between grade C and loan amount?
+In Model 2, the coefficient of the interaction term gradeC*loan_amnt (−0.0000001704) suggests that the increase in interest rate per dollar of loan amount is slightly lower for grade C loans than for grade A loans by 0.00001704%. The interaction term indicates that the relationship between loan amount and interest rate changes depending on the loan grade. For grade C loans, the interest rate increases more slowly with respect to loan amount than it does for grade A loans.
+
+>c.  The problem of multicollinearity describes the situations where one feature is highly correlated with other features (or with a linear combination of other features). If your goal is to use the model to make predictions, should you be concerned by the problem of multicollinearity? Why, or why not?
+If the goal is prediction, slight multicollinearity is usually not a significant issue, as it mainly impacts the interpretability of coefficients, complicating the understanding of each feature's individual effect. However, the overall predictive power of the model is often maintained despite multicollinearity, allowing for accurate predictions even if the relationships between features are obscured. That said, severe multicollinearity can result in unreliable coefficient estimates, which may harm prediction accuracy, particularly when new data diverges from the training set.
+
+
+# Out of sample testing **(Q5, Q6)**
+
+Let's check the predictive accuracy of model2 by holding out a subset of the data to use as a testing data set. This method is sometimes referred to as the hold-out method for out-of-sample testing. The code below is incomplete -- complete in light of the comments.
+
+```{r, out of sample testing }
+#split the data in dataframe called "testing" and another one called "training". The "training" dataframe should have 80% of the data and the "testing" dataframe 20%.
+
+set.seed(24)
+train_test_split <- initial_split(lc_clean, prop = 0.8)
+training <- training(train_test_split)
+testing <- testing(train_test_split)  
+
+#Fit model2 on the training set 
+model2_training <- lm(int_rate ~ term + annual_inc + dti + loan_amnt*grade, data = training)
+  
+
+#Calculate the RMSE of the model in the training set (in sample)
+rmse_training <- sqrt(mean(residuals(model2_training)^2))
+#Use the model to make predictions out of sample in the testing set
+pred<-predict(model2_training,testing)
+#Calculate the RMSE of the model in the testing set (out of sample)
+rmse_testing<- RMSE(pred,testing$int_rate)
+rmse_testing
+rmse_testing-rmse_training
+```
+
+## **Q5.** Answer the following questions {.unnumbered}
+
+>a.  How much does the predictive accuracy (in terms of RMSE) of Model 2 deteriorate when we move from in-sample to out-of-sample testing?
+The difference between the in-sample to out-of-sample RMSE is 0.0001523054. This very small increase indicates that the predictive accuracy of the model does not significantly deteriorate when moving from in-sample to out-of-sample testing. The model shows consistent performance across both datasets, suggesting that it generalizes well.
+
+>b.  Is this sensitive to the random seed chosen?
+Since,the difference between the in-sample to out-of-sample RMSE is small, the results are not sensitive to the random seed chosen. However, if the dataset contains outliers or is not very large, results may vary slightly with different seeds, though in this case, the impact seems minimal. 
+
+>c.  Is there any evidence of overfitting?
+The RMSE for the testing set is similar to the RMSE for the training set, which suggests that the model generalizes well and is not overfitting to the training data.
+
+
+## **Q6.** Linear model vs naïve model {.unnumbered}
+
+Consider the following naïve model that predicts the interest rate of any given loan application (observation) in the training set by averaging the interest rates of all the loan applications in the training set that belong in the same decile of loan amounts (e.g., 60th to 70th percentile). Compare its performance with the simple linear model we built in Q5.
+
+```{r}
+group_means_10 <- training %>%
+    mutate(deciles_training = as.factor(ntile(loan_amnt, 10))) %>%
+    group_by(deciles_training) %>%
+    dplyr::summarize(Mean = mean(int_rate, na.rm=TRUE), Lower = min(loan_amnt), Upper = max(loan_amnt))
+
+
+classify_group <- function(value) {
+  for (i in 1:nrow(group_means_10)) {
+    if (value >= group_means_10$Lower[i] && value <= group_means_10$Upper[i]) {
+      return(group_means_10$Mean[i])
+    } else if(value < group_means_10$Lower[1]){
+      return(group_means_10$Mean[1])
+    } else if(value > group_means_10$Upper[nrow(group_means_10)]){
+      return(group_means_10$Mean[nrow(group_means_10)])
+    }
+  }
+  return(NA)  # Return NA if the value doesn't fit into any group
+}
+
+
+estimation_tr = sapply(training$loan_amnt, classify_group)
+estimation_te = sapply(testing$loan_amnt, classify_group)
+
+rmse_training_10<- RMSE(estimation_tr,training$int_rate)
+rmse_training_10
+rmse_testing_10<- RMSE(estimation_te,testing$int_rate)
+rmse_testing_10
+```
+
+>The naïve model, which predicts the interest rate based solely on loan amount deciles, produces an RMSE of 0.0353 for the training set and 0.0358 for the testing set. Although the difference between the in-sample and out-of-sample performance is small, the error rate remains relatively high compared to the linear model. This shows that using only loan amount deciles doesn't provide a highly accurate prediction.
+
+>In contrast, the linear model from Q5, which incorporates additional predictors (loan amount, term, annual income, debt-to-income ratio, and loan grade), achieves a much lower RMSE of 0.0106. This indicates that the linear model has a significantly higher predictive accuracy than the naïve model.
+
+>Both models generalize reasonably well, as indicated by the small differences in RMSE between the training and testing sets. However, the linear model clearly outperforms the naïve model due to its inclusion of multiple predictors, which makes it more sophisticated and able to explain more variability in the interest rates. The naïve model's simplicity, based solely on loan amount deciles, limits its accuracy and predictive power. 
+
+
+# k-fold cross validation **(Q7)**
+
+We can also do out of sample testing using the method of k-fold cross validation which has several advantages over the traditional hold-out method. Using the `caret` package this is easy.
+
+```{r, k-fold cross validation }
+#the method "cv" stands for cross-validation. We are going to create 5 folds.  
+
+control <- trainControl (
+    method="cv",
+    number=5,
+    verboseIter=F) #by setting this to true the model will report its progress after each estimation
+
+#we are going to train the model and report the results using k-fold cross validation
+model2_kfold<-train(
+    int_rate ~ loan_amnt*grade + term+ dti + annual_inc ,
+    lc_clean,
+   method = "lm",
+    trControl = control
+   )
+  
+
+print(paste0("RMSE k-fold cross validation: ", model2_kfold$results$RMSE))
+```
+
+## **Q7.** Answer the following questions. {.unnumbered}
+
+>a.  Compare the out-of-sample RMSE of 5-fold cross validation and the hold-out method. Are they different?
+The RMSE from the 5-fold cross-validation is 0.01051879, which is very close to the RMSE from the hold-out method (out-of-sample RMSE of 0.01063597). This means that both methods are similar in terms of model accuracy. 
+
+>b.  Which do you think is more reliable?
+K-fold cross-validation is generally considered to be more reliable than the hold-out method because by training and testing the model on multiple subsets of the data, it averages the performance fluctuation caused by any specific split, leading to a more stable estimate of model accuracy. In contrast, the hold-out method can be more sensitive to the specific data points included in the training and testing sets.
+
+>c.  Are there any drawbacks to the k-fold cross validation method compared to the hold-out method?
+One drawback of k-fold cross-validation is that it is computationally more expensive since the model is trained and evaluated multiple times, one for each fold. The hold-out method only requires the model to be trained once, making it a faster method. However, the improved reliability of results in the k-fold cross-validation often justifies the higher cost.
+
+>Secondly, in k-fold cross-validation, if the dataset is very small, splitting it into multiple folds can result in higher variance between the folds due to the small sample sizes in each fold. This can lead to noisier estimates of model performance, as each fold may not represent the overall data distribution well. In such cases, fewer folds (like 5-fold) or even leave-one-out cross-validation might be more helpful.
+
+>d.  Determine the out-of-sample RMSE based on 10-fold or 15-fold cross validation. What you can infer from the outputs about the robustness of your model?
+By changing the number in trainControl to 10 and 15 we get: 
+RMSE 10-fold cross validation: 0.0105170078307014
+RMSE 15-fold cross validation: 0.0105163704906212. 
+
+>These RMSE values of the 10-fold and 15 fold cross validations are virtually the same, and are also very close to the RMSE from the 5-fold cross-validation (0.01051879). This consistency across different folds means that the model is robust and not overly sensitive to how the data is split during cross-validation.
+
+
+# Sample size estimation and learning curves **(Q8)**
+
+We can use the hold out method for out-of-sample testing to check if we have a sufficiently large sample to estimate the model reliably. The idea is to set aside some of the data as a testing set. From the remaining data draw progressively larger training sets and check how the performance of the model on the testing set changes. If the performance no longer improves with larger datasets we know we have a large enough sample. The code below does this. Examine it and run it with different random seeds.
+
+```{r, learning curves, warning = F }
+#select a testing dataset (20% of all data)
+set.seed(24)
+
+train_test_split <- initial_split(lc_clean, prop = 0.8)
+remaining <- training(train_test_split)
+testing <- testing(train_test_split)
+
+#We are now going to run 30 models starting from a tiny training set drawn from the training data and progressively increasing its size. The testing set remains the same in all iterations.
+
+#initiating the model by setting some parameters to zero
+rmse_sample <- 0
+sample_size<-0
+Rsq_sample<-0
+
+for(i in 1:30) {
+#from the remaining dataset select a smaller subset to training the data
+  set.seed(100)
+  learning_split <- initial_split(remaining, prop = i/100)
+  training <- training(learning_split)
+  sample_size[i]=nrow(training)
+  
+  #traing the model on the small dataset
+  model3_updated<-lm(int_rate ~ loan_amnt*grade + term+ dti + annual_inc*verification_status, training)
+  #test the performance of the model on the large testing dataset. This stays fixed for all iterations.
+  pred<-predict(model3_updated,testing)
+  rmse_sample[i]<-RMSE(pred,testing$int_rate)
+  Rsq_sample[i]<-R2(pred,testing$int_rate)
+}
+plot(sample_size,rmse_sample)
+plot(sample_size,Rsq_sample)
+```
+
+## **Q8.** Answer the following questions {.unnumbered}
+
+>a.  Using the learning curves above, approximately how large of a sample size would we need to estimate model 3 reliably?
+According to the learning curves, approximately 4,000 observations are required for reliable estimation. The RMSE and R² appear to stabilize around this point, which suggests that increasing the sample size beyond 4,000 observations would not really improve model performance. This implies that the model's performance on the test set is relatively stable beyond 4000 observations, indicating sufficient sample size for reliable predictions.
+
+>b.  Once we reach this sample size, if we want to reduce the prediction error further what options do we have?
+To further reduce the prediciton error we can use the following methods:
+
+>1 Hyperparameter Tuning: This method involves fine-tuning the model parameters that control its complexity (e.g., regularization      strength, learning rates) through methods such as grid search or randomized search and can enhance the model's performance.
+
+>2 Model Selection: Exploring various modeling techniques or algorithms (like random forests, gradient boosting, or neural networks)    can yield better results and lower prediction errors.
+
+>3 Regularization: Implementing regularization techniques, such as Lasso or Ridge regression, can help mitigate overfitting,      particularly in complex models with a high number of features as it helps focus on the most relevant features. 
+
+>4 K-fold Cross-Validation: Incorporating k-fold cross-validation can provide a robust estimate of model performance by ensuring that the model's performance is tested across different data splits, reducing the chances of overfitting.
+
+>5 Feature Engineering: Developing new features or modifying existing ones can significantly enhance model performance by capturing relevant patterns in the data.
+
+
+# Regularization using LASSO regression **(Q9, Q10)**
+
+If we are in the region of the learning curve where we do not have enough data, one option is to use a regularization method such as LASSO.
+
+Let's try to estimate a large and complicated model (many interactions and polynomials) on a small training dataset using OLS regression and hold-out validation method.
+
+```{r, OLS model overfitting, warning = F }
+#split the data in testing and training. The training test is really small.
+set.seed(24)
+train_test_split <- initial_split(lc_clean, prop = 0.008)
+training <- training(train_test_split)
+testing <- testing(train_test_split)
+
+model_lm<-lm(int_rate ~ poly(loan_amnt,3) + term+ dti + annual_inc + grade +grade:poly(loan_amnt,3):term +poly(loan_amnt,3):term +grade:term, training)
+predictions <- predict(model_lm,testing)
+
+# Model prediction performance
+data.frame(
+  RMSE = RMSE(predictions, testing$int_rate),
+  Rsquare = R2(predictions, testing$int_rate)
+)
+```
+
+Not surprisingly this model does not perform well -- as we knew form the learning curves we constructed for a simpler model we need a lot more data to estimate this model reliably. Try running it again with different seeds. The model's performance tends to be sensitive to the choice of the training set.
+
+LASSO regression offers one solution -- it extends the OLS regression by penalizing the model for setting any coefficient estimate to a value that is different from zero. The penalty is proportional to a parameter $\lambda$ (pronounced lambda). This parameter cannot be estimated directly (and for this reason sometimes it is referred to as hyperparameter). $\lambda$ will be selected through k-fold cross validation so as to provide the best out-of-sample performance. As a result of the LASSO procedure, only those features that are more strongly associated with the outcome will have non-zero coefficient estimates and the estimated model will be less sensitive to the training set. Sometimes LASSO regression is referred to as regularization.
+
+```{r, LASSO compared to OLS, warning=FALSE, message=FALSE }
+#we will look for the optimal lambda in this sequence (we will try 1000 different lambdas)
+lambda_seq <- seq(0, 0.01, length = 1000)
+#lasso regression using k-fold cross validation to select the best lambda
+lasso <- train(
+ int_rate ~ poly(loan_amnt,3) + term + dti + annual_inc + grade + grade:poly(loan_amnt,3):term + poly(loan_amnt,3):term +grade:term,
+ data = training,
+ method = "glmnet",
+  preProc = c("center", "scale"), #This option standardizes the data before running the LASSO regression
+  trControl = control,
+  tuneGrid = expand.grid(alpha = 1, lambda = lambda_seq) #alpha=1 specifies to run a LASSO regression.
+  )
+
+# Model coefficients
+coef(lasso$finalModel, lasso$bestTune$lambda)
+#Best lambda
+lasso$bestTune$lambda
+# Count of how many coefficients are greater than zero and how many are equal to zero
+sum(coef(lasso$finalModel, lasso$bestTune$lambda)!=0) #Is the non-zero intercept also included?
+sum(coef(lasso$finalModel, lasso$bestTune$lambda)==0)
+ 
+# Make predictions
+predictions <- predict(lasso,testing)
+
+# Model prediction performance
+data.frame(
+  RMSE = RMSE(predictions, testing$int_rate),
+  Rsquare = R2(predictions, testing$int_rate)
+)
+```
+
+## **Q9.** Answer the following questions {.unnumbered}
+
+>a.  Which model performs best out of sample, OLS regression or LASSO?
+The LASSO regression performs better out of sample compared to the OLS model. This is indicated by the lower RMSE (0.0119 for LASSO vs. 0.036 for OLS) and higher R-squared (0.898 for LASSO vs. 0.378 for OLS). LASSO's ability to regularize by penalizing large coefficients helps prevent overfitting, improving generalization to unseen data.
+
+>b.  What value of lambda offers best performance? Is this lambda sensitive to the random seed? Is the performance with best lamda sensitive to the random seed?
+The value of lambda that offers the best performance is 0.0004104104. This was determined using cross-validation to select the optimal amount of regularization in the LASSO model.
+
+>Yes, the lambda value can be sensitive to the random seed. Since cross-validation splits the data randomly into training and validation folds, different splits may lead to slightly different optimal lambda values. Changing the random seed may cause these splits to differ, which can lead to the selection of a slightly different lambda value..
+
+>The performance with the best lambda is also somewhat sensitive to the random seed, but generally not by a large margin. This is because, when you change the seed, you're altering the data split, which may slightly impact the training and validation sets used in cross-validation. As a result, the performance metrics (RMSE, R-squared) may fluctuate slightly, but the overall performance should remain similar if the dataset is well-represented across the splits.
+
+>c.  How many coefficients are zero and how many are non-zero in the LASSO model of best fit?
+Coefficients that are zero: 29 
+Coefficients that are non-zero: 29 
+
+>d.  Why is it important to standardize continuous variables before running LASSO?
+Standardizing continuous variables before running LASSO is important because LASSO applies a penalty to the magnitude of coefficients. If variables are on different scales (e.g., income in thousands vs. loan amount in hundreds), the penalty would disproportionately affect variables with larger scales. Standardizing ensures that all variables contribute equally to the regularization process, allowing LASSO to shrink coefficients appropriately based on their predictive power rather than their scale.
+
+>e.  Change the `lambda` parameter to `10,000`. How many variables are set to zero now?
+After setting lambda to 10,000 the number of non-zero coefficients is 1 and the number of zero coefficients are 57. The code is given below.
+
+```{r}
+# LASSO regression with fixed lambda = 10,000
+fixed_lambda <- 10000
+
+# LASSO model with fixed lambda
+lasso_fixed <- train(
+  int_rate ~ poly(loan_amnt,3) + term + dti + annual_inc + grade + grade:poly(loan_amnt,3):term + poly(loan_amnt,3):term + grade:term,
+  data = training,
+  method = "glmnet",
+  preProc = c("center", "scale"), # Standardizes the data
+  trControl = control,
+  tuneGrid = expand.grid(alpha = 1, lambda = fixed_lambda) # Fix lambda to 10,000
+)
+
+# Model coefficients with fixed lambda = 10,000
+coef(lasso_fixed$finalModel, s = fixed_lambda)
+
+# Count of how many coefficients are greater than zero and how many are equal to zero
+non_zero_coef_count <- sum(coef(lasso_fixed$finalModel, s = fixed_lambda) != 0)
+zero_coef_count <- sum(coef(lasso_fixed$finalModel, s = fixed_lambda) == 0)
+
+# Print the number of non-zero and zero coefficients
+print(non_zero_coef_count) # Non-zero coefficients
+print(zero_coef_count)     # Zero coefficients
+
+# Make predictions with the fixed lambda model
+predictions <- predict(lasso_fixed, testing)
+
+# Model prediction performance with fixed lambda
+performance <- data.frame(
+  RMSE = RMSE(predictions, testing$int_rate),
+  Rsquare = R2(predictions, testing$int_rate)
+)
+
+# Print the performance metrics
+print(performance)
+```
+
+Recall that LASSO regression is almost identical to the OLS, however, there is an extra penalty term that sums the absolute values of the regression coefficients and multiplies this value with some positive penalty parameter. Formally, LASSO uses an $\ell_1$-norm, which is defined as $\ell_1(x) = \sum_{i=1}^n |x_i|$ for $x \in \mathbb{R}^n$. Another popular regularization method is the Ridge regression which penalizes the sum of squares of the coefficients. Formally, the $\ell_2$-norm is used, which is defined as $\ell_2(x) = \sqrt{\sum_{i=1}^n x_i^2}$; however, for the ease of derivations, we typically penalize the sum of squares $\ell_2^2(x) = \sum_{i=1}^n x_i^2$ without loss of generality. Run a Ridge regression and answer the following questions.
+
+```{r, Ridge compared to OLS and LASSO, warning=FALSE, message=FALSE }
+# the code of ridge regression is almost the same, except alpha. 
+#we will look for the optimal lambda in this sequence (we will try 1000 different lambdas)
+lambda_seq <- seq(0, 0.01, length = 1000)
+#lasso regression using k-fold cross validation to select the best lambda
+ridge <- train(
+ int_rate ~ poly(loan_amnt,3) + term+ dti + annual_inc + grade +grade:poly(loan_amnt,3):term +poly(loan_amnt,3):term +grade:term,
+ data = training,
+ method = "glmnet",
+  preProc = c("center", "scale"), #This option standardizes the data before running the LASSO regression
+  trControl = control,
+  tuneGrid = expand.grid(alpha = 0, lambda = lambda_seq) #alpha=1 specifies to run a LASSO regression.
+  )
+
+# Model coefficients
+coef(ridge$finalModel, ridge$bestTune$lambda)
+#Best lambda
+ridge$bestTune$lambda
+# Count of how many coefficients are greater than zero and how many are equal to zero
+sum(coef(ridge$finalModel, ridge$bestTune$lambda)!=0) #Is the non-zero intercept also included?
+sum(coef(ridge$finalModel, ridge$bestTune$lambda)==0)
+ 
+# Make predictions
+predictions <- predict(ridge,testing)
+
+# Model prediction performance
+data.frame(
+  RMSE = RMSE(predictions, testing$int_rate),
+  Rsquare = R2(predictions, testing$int_rate)
+)
+# For glmnet: alpha=0 specifies a ridge regression, alpha=1 specifies a LASSO regression,
+
+```
+
+## **Q10.** Answer the following questions {.unnumbered}
+
+>a.  Which model performs best out of sample, OLS regression, LASSO, or Ridge?
+LASSO performs the best out of sample, with the lowest RMSE (0.0119) and the highest R-squared (0.898) compared to OLS (RMSE: 0.036, R-squared: 0.378) and Ridge (RMSE: 0.0321, R-squared: 0.426).
+
+>b.  What value of lambda offers best performance?
+The value of lambda that offers the best performance in the Ridge regression model is 0.001841842.
+
+>c.  How many coefficients are zero and how many are non-zero in the Ridge model of best fit? How does it compare with the LASSO regression and what is the reason of the difference?
+In the Ridge regression model, there are 55 non-zero coefficients and 3 zero coefficients, while in the LASSO model, there are 29 non-zero and 29 zero coefficients. The key difference between the two models lies in how they handle regularization. Ridge regression applies an L2 penalty, which shrinks the magnitude of all coefficients but does not eliminate any, thus retaining all predictors in the model. In contrast, LASSO uses an L1 penalty, which not only shrinks the coefficients but also sets some of them exactly to zero, effectively performing feature selection. Therefore, Lasso  results in a simpler model with fewer variables and easier interpretation. This difference arises because Ridge is better suited when all predictors are assumed to have some influence, while LASSO is ideal for scenarios where only a subset of features are truly important, reducing the risk of overfitting by excluding irrelevant variables.
+
+>d.  Is it important to standardize continuous variables before running Ridge as in LASSO? Or is it less important for the Ridge regression?
+Yes, it is important to standardize continuous variables before running Ridge regression, just as in LASSO. Both Ridge and LASSO apply penalties to the coefficients, and if the variables are on different scales, those with larger magnitudes could dominate the penalty, leading to biased results. Standardizing ensures that all variables contribute equally to the regularization process.
+
+>e.  In class, we studied the advantages of LASSO regression over the standard OLS. Discuss one potential advantage of using the Ridge regression over the OLS.
+One potential advantage of using Ridge regression over OLS is that Ridge can handle multicollinearity more effectively. When predictors are highly correlated, OLS can produce large, unstable coefficients, leading to overfitting. Ridge regression, by applying an L2 penalty, shrinks the coefficients and reduces their variance, resulting in more stable and reliable estimates, even in the presence of multicollinearity. 
+
+
+# Using time information **(Q11)**
+
+Let's try to further improve the model's predictive performance. So far we have not used any time series information. Effectively, all things being equal, our prediction for the interest rate of a loan given in 2009 would be the same as that of a loan given in 2011. Is this a good assumption?
+
+First, investigate graphically whether there are any time trends in the interest rates. (Note that the variable "issue_d" only has information on the month the loan was awarded but not the exact date.) Can you use this information to further improve the forecasting accuracy of your model? Try controlling for time in a linear fashion (i.e., a linear time trend) and controlling for time as month-year dummies (this is a method to capture non-linear effects of time -- we assume that the impact of time doesn't change within a month but it can chance from month to month). Finally, check if time affect loans of different grades differently.
+
+```{r, time trends }
+lc_clean <- lc_clean %>%
+  mutate(issue_d = as.Date(issue_d, format = "%Y-%m-%d"))
+
+# linear time trend -- concentrate on the interest rate as a function of the time (issue_d), (add code below)
+ggplot(lc_clean, aes(x = issue_d, y = int_rate)) +
+  geom_point(alpha = 0.5) +  # Scatter plot of interest rates over time
+  geom_smooth(method = "lm", color = "blue", se = TRUE) +  # Add a linear trend line
+  labs(title = "Interest Rate Over Time (Linear Trend)", x = "Issue Date", y = "Interest Rate") +
+  theme_minimal() 
+
+# linear time trend by grade -- similar plot, however, group by grades (hint: use color=grade) (add code below)
+ggplot(lc_clean, aes(x = issue_d, y = int_rate,color = grade)) +
+  geom_point(alpha = 0.5) +  # Scatter plot of interest rates over time
+  geom_smooth(method = "lm", color = "blue", se = TRUE) +  # Add a linear trend line
+  labs(title = "Interest Rate Over Time (Linear Trend)", x = "Issue Date", y = "Interest Rate") +
+  theme_minimal() 
+
+# Train models using OLS regression and k-fold cross-validation
+# We set model2_kfold in Q-7 as the benchmark model.
+# The first model use the same variables of model2_kfold, plus a linear time trend
+
+time1 <- train(
+  int_rate ~ loan_amnt*grade + term + dti + annual_inc + issue_d,  # Add linear time trend issue_d
+  data = lc_clean,
+  method = "lm",
+  trControl = control
+)
+summary(time1)
+
+#The second model has a different linear time trend for each grade class
+time2 <- train(
+  int_rate ~ loan_amnt*grade + term + dti + annual_inc + grade:issue_d,  # Interaction between grade and issue_d
+  data = lc_clean,
+  method = "lm",
+  trControl = control
+)
+summary(time2)
+
+#Change the time trend to a month dummy variables.
+#zoo::as.yearmon() creates month dummies 
+lc_clean_month<-lc_clean %>%
+  mutate(ym = as.factor(as.yearmon(lc_clean$issue_d, format = "%Y-%m-%d")))
+
+time3 <- train(
+  int_rate ~ loan_amnt*grade + term + dti + annual_inc + ym,  # Add month-year dummy variable ym
+  data = lc_clean_month,
+  method = "lm",
+  trControl = control
+)
+summary(time3)
+
+#We specify one month dummy variable for each grade. This is going to be a large model as there are 55 months x 7 grades = 133 month-grade dummies.
+time4 <- train(
+  int_rate ~ loan_amnt*grade + term + dti + annual_inc + grade:ym,  # Interaction between grade and month-year dummy variable ym
+  data = lc_clean_month,
+  method = "lm",
+  trControl = control
+)
+summary(time4)
+
+data.frame( Model= c("Benchmark","time1","time2","time3","time4"),
+            RMSE=c(model2_kfold$results$RMSE, 
+                     time1$results$RMSE, 
+                     time2$results$RMSE, 
+                     time3$results$RMSE, 
+                     time4$results$RMSE)
+            )
+```
+
+## **Q11.** Answer the following questions {.unnumbered}
+
+>a.  Based on your analysis above, is there any evidence to suggest that interest rates change over time?
+Yes, there is evidence to suggest that interest rates change over time. The models that include time-related variables (linear time trend, month-year dummies, and interactions between time and grade) have improved prediction performance compared to the benchmark model, which doesn't account for time. This indicates that time is an important factor influencing interest rates, as incorporating it into the model reduces prediction errors (lower RMSE values).
+
+>b.  Does including time trends / month-year dummies improve prediction performance?
+Including time trends and month-year dummies significantly improves prediction performance, as evidenced by the progressively decreasing RMSE values with the addition of more complex time-related effects. The benchmark model, which does not account for time, has an RMSE of 0.01052. Adding a simple linear time trend in the time1 model slightly improves the RMSE to 0.01032. Introducing a linear time trend by loan grade in time2 further reduces the RMSE to 0.00905. Using month-year dummies in time3 shows additional improvement with an RMSE of 0.00895. Finally, the most complex model, time4, which incorporates both month-year dummies and their interaction with loan grades, yields the lowest RMSE of 0.00743. Thus, controlling for time, especially with more granular month-year dummies, greatly enhances the model's ability to predict interest rates more accurately. 
+
+
+# Using bond yields **(Q12)**
+
+One concern with using time trends for forecasting is that in order to make predictions for future loans we will need to project trends to the future. This is an extrapolation that may not be reasonable, especially if macroeconomic conditions in the future change. Furthermore, if we are using month-year dummies, it is not even possible to estimate the coefficient of these dummy variables for future months.
+
+Instead, perhaps it is better to find the reasons as to why different periods are different from one another. The csv file "MonthBondYields.csv" contains information on the yield of US Treasuries on the first day of each month (columns Price stands for the closing yield). Can you use it to see if you can improve your predictions without using time dummies?
+
+```{r, bond yields }
+#load the data to memory as a dataframe
+bond_yields<-readr::read_csv("MonthBondYields2024.csv")
+
+#make the date of the bond file comparable to the lending club dataset
+#for some regional date/number (locale) settings this may not work. If it does try running the following line of code in the Console
+#Sys.setlocale("LC_TIME","English")
+bond_yields <- bond_yields %>%
+  mutate(Date2=as.Date(paste("01",Date,sep="-"),"%d-%y-%b"))
+
+#let's see what happened to bond yields over time. Lower bond yields mean the cost of borrowing has gone down.
+
+bond_yields %>%
+  ggplot(aes(x=Date2, y=Price))+geom_point(size=0.1, alpha=0.5)
+
+
+#join the data using a left join
+lc_with_bonds<-lc_clean %>%
+  left_join(bond_yields, by = c("issue_d" = "Date2")) %>%
+  arrange(issue_d) %>%
+  filter(!is.na(Price)) #drop any observations where there re no bond prices available
+
+lc_with_bonds
+
+# investigate graphically if there is a relationship 
+lc_with_bonds%>%
+  ggplot(aes(x=int_rate, y=Price))+geom_point(size=0.1, alpha=0.5)+geom_smooth(method="lm")
+
+lc_with_bonds%>%
+  ggplot(aes(x=int_rate, y=Price, color=grade))+geom_point(size=0.1, alpha=0.5)+geom_smooth(method="lm")
+
+#let's train a model using the bond information
+
+glimpse(lc_with_bonds)
+
+# Define control object for the training process
+control <- trainControl(method = "cv", number = 5)  # 5-fold cross-validation
+
+model_bond <-train (
+    int_rate ~ Price*grade,  #fill your variables here -- try adding Price with grade.
+    lc_with_bonds,
+    method = "lm",
+    trControl = control
+)
+summary(model_bond)
+model_bond$results$RMSE
+```
+
+## **Q12.** Do bond yields have any explanatory power? Do not forget to interpret coefficients. {.unnumbered}
+
+>When testing the model with the interaction between bond yields (Price) and loan grades, all variables in the model are statistically significant at the 0.001 level (p-value < 0.1%), as indicated by their extremely low p-values and high t-statistics (all greater than |2|). This suggests that both bond yields and loan grades significantly impact the interest rates charged on loans.
+
+>The coefficient for Price shows that for every 1-unit increase in bond yields, the interest rate on loans increases by approximately 0.099%. This indicates that as bond yields rise, lenders tend to charge higher interest rates on loans, reflecting the increased cost of borrowing in the broader financial market.
+
+>The coefficients for loan grades indicate the additional interest charged compared to the baseline grade (Grade A). For instance, grade B loans have interest rates that are roughly 5.3% higher than those charged on Grade A loans, while Grade G loans have interest rates about 19.2% higher than grade A loans, while controlling for bond yields (Price). This pattern reflects the increasing riskiness of loans as the grades progress, with riskier loans commanding higher interest rates to compensate for the increased likelihood of default.
+
+>The interaction terms between Price and loan grades reveal that as loan grades progress from A to G, the impact of bond yields on interest rates diminishes, though it remains significant. For example, with a 1-unit increase in bond yields, the interest rate for a grade A loan increases by 0.099%, while the increase in the interest rate for a grade B loan is 0.58% (Coefficient of -0.0057625) lower than that for a grade A loan. Therefore, the overall increase in grade B loan for a 1-unit increase in bond yields is (0.099% - 0.58% = 0.41%). This pattern is consistent across all loan grades, indicating that although bond yields still affect the interest rate charged on riskier loans, the effect is of bond yields on interest rates diminishes as the grades progress from A to G. 
+
+
+# Better prediction **(Q13, Q14, Q15)**
+
+## **Q13.** Choose a model and describe your methodology {.unnumbered}
+
+Feel free to investigate more models with different features using the methodologies covered so far. Present the model you believe predicts interest rates the best. Describe how good it is (including the length of the 95% Confidence Interval of predictions that use this model) and what features it uses. What methodology did you use to choose it? (Do not use time trends or month-year dummies in your model as the first cannot be extrapolated into the future reliably and the second cannot be even estimated for future months.)
+
+```{r model comparison}
+# Clean the data for log transformations
+clean_data <- function(data) {
+  data_clean <- data %>%
+    filter(!is.na(loan_amnt) & !is.nan(loan_amnt) & !is.infinite(loan_amnt) & loan_amnt > 0) %>%
+    filter(!is.na(annual_inc) & !is.nan(annual_inc) & !is.infinite(annual_inc) & annual_inc > 0) %>%
+    filter(!is.na(dti) & !is.nan(dti) & !is.infinite(dti) & dti > 0) %>%
+    filter(!is.na(Price) & !is.nan(Price) & !is.infinite(Price)) %>%
+    filter(!is.na(grade)) 
+  
+  return(data_clean)
+}
+
+# Fit the models
+# Model Linear (Linear with Interaction Effects)
+fit_model_linear <- function(data) {
+  lm(int_rate ~ loan_amnt + grade + dti + annual_inc + Price + 
+       loan_amnt:grade + dti:Price, data = data)
+}
+
+# Model Polynomial (Polynomial Terms and Interaction Effects)
+fit_model_polynomial <- function(data) {
+  lm(int_rate ~ poly(annual_inc, 3) + poly(dti, 2) + loan_amnt + grade + Price + 
+       loan_amnt:grade + annual_inc:grade + dti:Price, data = data)
+}
+
+# Model Log (Log Transformation and Interaction Effects)
+fit_model_log <- function(data) {
+  lm(int_rate ~ log(loan_amnt) + log(annual_inc) + log(dti) + grade + Price +
+       log(loan_amnt):log(dti) + log(annual_inc):Price + loan_amnt:Price + 
+       grade:Price, data = data)
+}
+
+
+# Split the data into training and testing 
+set.seed(24)
+train_test_split <- initial_split(lc_with_bonds, prop = 0.8)
+training <- training(train_test_split)
+testing <- testing(train_test_split)
+
+# Clean the training and testing datasets
+training_clean <- clean_data(training)
+testing_clean <- clean_data(testing)
+
+# Fit models on the training data
+model_linear <- fit_model_linear(training_clean)
+model_polynomial <- fit_model_polynomial(training_clean)
+model_log <- fit_model_log(training_clean)
+
+# Calculate RMSE, Adjusted R-squared, and Average 95% CI Length
+calculate_metrics <- function(model, testing_data) {
+  
+  # 95% confidence intervals
+  predictions_with_ci <- predict(model, testing_data, interval = "confidence", level = 0.95)
+  
+  # RMSE
+  predicted_values <- predictions_with_ci[, "fit"]
+  actual_values <- testing_data$int_rate
+  rmse <- RMSE(predicted_values, actual_values)
+  
+  # Adjusted R-squared
+  model_summary <- summary(model)
+  adjusted_r_squared <- model_summary$adj.r.squared
+  
+  # 95% CI Length
+  ci_length <- predictions_with_ci[, "upr"] - predictions_with_ci[, "lwr"]
+  average_ci_length <- mean(ci_length)
+  
+  return(data.frame(RMSE = rmse, Adjusted_R2 = adjusted_r_squared, Avg_CI_Length = average_ci_length))
+}
+
+# Calculate metrics for each model
+model_linear_metrics <- calculate_metrics(model_linear, testing_clean)
+model_polynomial_metrics <- calculate_metrics(model_polynomial, testing_clean)
+model_log_metrics <- calculate_metrics(model_log, testing_clean)
+
+# Print the model metrics
+results <- rbind(
+  cbind(Model = "Model Linear", model_linear_metrics),
+  cbind(Model = "Model Polynomial", model_polynomial_metrics),
+  cbind(Model = "Model Log", model_log_metrics)
+)
+
+print(results)
+```
+
+>We fitted and compared three different models for predicting LendingClub interest rates: Model Bond, Model Polynomial, and Model Log.
+
+>Model Bond is a linear model incorporating bond yields and interaction terms between key variables like loan amount, grade, and debt-to-income ratio (DTI). Being the most simple out for the three models, this model has moderate performance, with an RMSE of 0.0098, an Adjusted R-squared of 0.87, and an average 95% confidence interval (CI) length of 0.020.
+
+>Model Polynomial recognises non-linear relationships by adding polynomial terms (cubic for annual income and quadratic for DTI) and interaction terms. This model improves performance, achieving an RMSE of 0.0085, an Adjusted R-squared of 0.89, and a tighter average 95% CI length of 0.018, making it more accurate for capturing non-linear trends.
+
+>Model Log applies log transformations to handle skewed variables like loan amount, annual income, and DTI, while also using interaction terms. It shows the best performance, with the lowest RMSE of 0.0078, the highest Adjusted R-squared of 0.91, and the narrowest 95% CI length of 0.015, indicating a robust fit.
+
+>Overall, Model Log is the most accurate, having the lowest RMSE, highest Adjusted R-squared and narrowest 95% CI length, followed by Model Polynomial, while Model Bond is the simplest but less precise.
+
+
+## **Q14.** (optional) Text data {.unnumbered}
+
+Use a pre-trained LLM or a text-mining package that is available in R to assign some numerical values (e.g., sentiment score, formal English score) to the `desc` variable and include this in a linear model to improve the overall performance.
+
+## **Q15.** (optional) Other data {.unnumbered}
+
+Use other publicly available datasets to further improve performance (e.g., quarterly data on US inflation, [CPI](https://fred.stlouisfed.org/series/CPALTT01USQ657N), [unemployment rate](https://fred.stlouisfed.org/series/UNRATE)). Explain why you think the additional data will make a difference and check if it does.
